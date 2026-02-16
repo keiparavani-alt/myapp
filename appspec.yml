@@ -2,8 +2,15 @@ version: 0.0
 os: linux
 
 files:
-  - source: /
+  - source: public
+    destination: /opt/myapp/public
+  - source: server.js
     destination: /opt/myapp
+  - source: package.json
+    destination: /opt/myapp
+  # if you have package-lock.json, add it too:
+  # - source: package-lock.json
+  #   destination: /opt/myapp
 
 hooks:
   ApplicationStop:
@@ -20,4 +27,3 @@ hooks:
     - location: scripts/start.sh
       timeout: 60
       runas: root
-
