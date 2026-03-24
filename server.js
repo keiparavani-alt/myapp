@@ -4,17 +4,16 @@ require("dotenv").config();
 const express = require("express");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcrypt");
-const {
-  SecretsManagerClient,
-  GetSecretValueCommand
-} = require("@aws-sdk/client-secrets-manager");
 
 const PORT = Number(process.env.PORT || 3000);
-const AWS_REGION = process.env.AWS_REGION || "eu-central-1";
-const SECRET_NAME = process.env.SECRET_NAME;
 
-if (!SECRET_NAME) {
-  console.error("Missing SECRET_NAME env var.");
+const DB_HOST = process.env.DB_HOST;
+const DB_USER = process.env.DB_USER;
+const DB_PASS = process.env.DB_PASS;
+const DB_NAME = process.env.DB_NAME;
+
+if (!DB_HOST || !DB_USER || !DB_PASS || !DB_NAME) {
+  console.error("Missing DB env vars. Set DB_HOST, DB_USER, DB_PASS, DB_NAME.");
   process.exit(1);
 }
 
@@ -24,33 +23,17 @@ app.use(express.urlencoded({ extended: true }));
 
 let pool;
 
-async function getDbConfig() {
-  const client = new SecretsManagerClient({ region: AWS_REGION });
-  const response = await client.send(
-    new GetSecretValueCommand({ SecretId: SECRET_NAME })
-  );
-
-  if (!response.SecretString) {
-    throw new Error("SecretString is empty");
-  }
-
-  const secret = JSON.parse(response.SecretString);
-
-  return {
-    host: secret.host,
-    port: secret.port || 3306,
-    user: secret.username,
-    password: secret.password,
-    database: secret.dbname,
+async function initDb() {
+  pool = mysql.createPool({
+    host: DB_HOST,
+    user: DB_USER,
+    password: DB_PASS,
+    database: DB_NAME,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
-  };
-}
+  });
 
-async function initDb() {
-  const config = await getDbConfig();
-  pool = mysql.createPool(config);
   await pool.query("SELECT 1");
 }
 
