@@ -1,81 +1,94 @@
-require('dotenv').config();
+require("dotenv").config();
 "use strict";
 
 const express = require("express");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcrypt");
+const {
+  SecretsManagerClient,
+  GetSecretValueCommand
+} = require("@aws-sdk/client-secrets-manager");
 
 const PORT = Number(process.env.PORT || 3000);
+const AWS_REGION = process.env.AWS_REGION || "eu-central-1";
+const SECRET_NAME = process.env.SECRET_NAME;
 
-// These MUST be set on the EC2 instance as environment variables:
-const DB_HOST = process.env.DB_HOST;
-const DB_USER = process.env.DB_USER;
-const DB_PASS = process.env.DB_PASS;
-const DB_NAME = process.env.DB_NAME;
-
-if (!DB_HOST || !DB_USER || !DB_PASS || !DB_NAME) {
-  console.error("Missing DB env vars. Set DB_HOST, DB_USER, DB_PASS, DB_NAME.");
+if (!SECRET_NAME) {
+  console.error("Missing SECRET_NAME env var.");
   process.exit(1);
 }
 
 const app = express();
 app.use(express.json());
-app.use(express.static("public"));
+app.use(express.urlencoded({ extended: true }));
 
 let pool;
 
-async function initDb() {
-  pool = mysql.createPool({
-    host: DB_HOST,
-    user: DB_USER,
-    password: DB_PASS,
-    database: DB_NAME,
+async function getDbConfig() {
+  const client = new SecretsManagerClient({ region: AWS_REGION });
+  const response = await client.send(
+    new GetSecretValueCommand({ SecretId: SECRET_NAME })
+  );
+
+  if (!response.SecretString) {
+    throw new Error("SecretString is empty");
+  }
+
+  const secret = JSON.parse(response.SecretString);
+
+  return {
+    host: secret.host,
+    port: secret.port || 3306,
+    user: secret.username,
+    password: secret.password,
+    database: secret.dbname,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
-  });
-  // quick test
+  };
+}
+
+async function initDb() {
+  const config = await getDbConfig();
+  pool = mysql.createPool(config);
   await pool.query("SELECT 1");
 }
 
-app.get("/health", (req, res) => {
-  res.status(200).send("OK");
+app.get("/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.status(200).send("ok");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("db error");
+  }
 });
 
-app.post("/api/register", async (req, res) => {
+app.post("/submit", async (req, res) => {
   try {
-    const name = String(req.body.name || "").trim();
-    const email = String(req.body.email || "").trim().toLowerCase();
-    const password = String(req.body.password || "");
+    const { name, email, password } = req.body;
+    const hashed = await bcrypt.hash(password, 10);
 
-    // Basic validation
-    if (!name || name.length > 100) return res.status(400).send("Invalid name");
-    if (!email || email.length > 255 || !email.includes("@")) return res.status(400).send("Invalid email");
-    if (!password || password.length < 6 || password.length > 128) return res.status(400).send("Invalid password");
-
-    const password_hash = await bcrypt.hash(password, 10);
-
-    await pool.execute(
-      "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
-      [name, email, password_hash]
+    await pool.query(
+      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
+      [name, email, hashed]
     );
 
-    res.status(200).send("User registered");
+    res.send("Saved");
   } catch (err) {
-    // MySQL duplicate email
-    if (err && err.code === "ER_DUP_ENTRY") {
-      return res.status(409).send("Email already exists");
-    }
     console.error(err);
     res.status(500).send("Server error");
   }
 });
 
-initDb()
-  .then(() => {
-    app.listen(PORT, "0.0.0.0", () => console.log(`Listening on ${PORT}`));
-  })
-  .catch((e) => {
-    console.error("DB init failed:", e.message);
+(async () => {
+  try {
+    await initDb();
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("Startup failed:", err);
     process.exit(1);
-  });
+  }
+})();
